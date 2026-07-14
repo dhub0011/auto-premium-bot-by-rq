@@ -1,0 +1,18 @@
+[
+  {
+    "id": 1,
+    "name": "Toggle VPN",
+    "url": "https://toggle-vpn.com/signup",
+    "plan": "1Month",
+    "code": "",
+    "created_at": "2026-07-14T12:00:00"
+  },
+  {
+    "id": 2,
+    "name": "GALAXY AI",
+    "url": "https://galaxy-ai.com/signup",
+    "plan": "Premium",
+    "code": "",
+    "created_at": "2026-07-14T12:00:00"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "id": 1,
+    "url": "http://proxy1.example.com:8080",
+    "country": "US",
+    "status": "pending"
+  },
+  {
+    "id": 2,
+    "url": "http://proxy2.example.com:8080",
+    "country": "Australia",
+    "status": "pending"
+  }
+]

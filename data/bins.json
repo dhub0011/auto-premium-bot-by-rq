@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "bin": "2842770951889894",
+    "label": "Toggle VPN BIN",
+    "active": true
+  },
+  {
+    "id": 2,
+    "bin": "2500732381880789",
+    "label": "GALAXY AI BIN",
+    "active": true
+  },
+  {
+    "id": 3,
+    "bin": "377481015",
+    "label": "Generic BIN",
+    "active": true
+  },
+  {
+    "id": 4,
+    "bin": "37936303",
+    "label": "Australia BIN",
+    "active": true
+  }
+]

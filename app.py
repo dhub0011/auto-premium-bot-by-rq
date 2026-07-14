@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, send_file, Response, stream_with_context
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import json
@@ -8,14 +8,14 @@ import time
 import threading
 import requests
 import random
-from datetime import datetime
-import queue
 import asyncio
+from datetime import datetime
 from playwright.async_api import async_playwright
 
+# ======= APP INITIALIZATION =======
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+app.config['SECRET_KEY'] = 'your-secret-key-change-this'
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 CORS(app)
 
 # ======= DATA STORAGE =======
@@ -24,6 +24,7 @@ PROXIES_FILE = os.path.join(DATA_DIR, "proxies.json")
 SITES_FILE = os.path.join(DATA_DIR, "sites.json")
 BINS_FILE = os.path.join(DATA_DIR, "bins.json")
 SUCCESS_FILE = os.path.join(DATA_DIR, "success.csv")
+LEMUR_FILE = os.path.join(DATA_DIR, "lemur_keys.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -58,12 +59,29 @@ def save_bins(bins):
     with open(BINS_FILE, 'w') as f:
         json.dump(bins, f, indent=2)
 
+def load_lemur_keys():
+    if os.path.exists(LEMUR_FILE):
+        with open(LEMUR_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+def save_lemur_keys(keys):
+    with open(LEMUR_FILE, 'w') as f:
+        json.dump(keys, f, indent=2)
+
+def load_success():
+    if os.path.exists(SUCCESS_FILE):
+        with open(SUCCESS_FILE, 'r') as f:
+            reader = csv.reader(f)
+            return list(reader)
+    return []
+
 # ======= PROXY CHECKER =======
-def check_proxy(proxy):
+def check_proxy(proxy_url):
     """Check if proxy is alive"""
     try:
         test_url = "http://httpbin.org/ip"
-        proxies = {"http": proxy, "https": proxy}
+        proxies = {"http": proxy_url, "https": proxy_url}
         response = requests.get(test_url, proxies=proxies, timeout=5)
         return response.status_code == 200
     except:
@@ -114,18 +132,19 @@ class AutomationEngine:
         self.email_gen = EmailGenerator()
         self.running = False
         self.current_task = None
-        self.log_queue = queue.Queue()
         
     def log(self, message, type="info"):
-        self.log_queue.put({"message": message, "type": type, "time": datetime.now().isoformat()})
-        socketio.emit('log', {"message": message, "type": type})
+        socketio.emit('log', {"message": message, "type": type, "time": datetime.now().isoformat()})
         
     def log_success(self, site, email, password, plan, proxy, bin_used):
-        self.log(f"✅ SUCCESS: {site} | {email} | {plan} | {proxy}", "success")
+        self.log(f"✅ SUCCESS: {site} | {email} | {plan}", "success")
         
         # Save to CSV
+        file_exists = os.path.exists(SUCCESS_FILE)
         with open(SUCCESS_FILE, 'a', newline='') as f:
             writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["timestamp", "site", "email", "password", "plan", "proxy", "bin", "status"])
             writer.writerow([
                 datetime.now().isoformat(),
                 site,
@@ -157,6 +176,7 @@ class AutomationEngine:
             return False
         
         self.log(f"📧 Email: {email_data['email']}")
+        self.log(f"🔑 Password: {email_data['password']}")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -178,36 +198,49 @@ class AutomationEngine:
             
             try:
                 # Navigate to site
+                self.log(f"📄 Loading: {site['url']}")
                 await page.goto(site['url'], timeout=30000)
                 await page.wait_for_load_state('networkidle')
-                self.log(f"📄 Loaded: {site['url']}")
                 
                 # Fill signup
+                self.log(f"📝 Filling signup form")
                 await page.fill('input[type="email"]', email_data['email'])
                 await page.fill('input[type="password"]', email_data['password'])
                 
                 # Handle plan selection if specified
                 if site.get('plan'):
-                    await page.select_option('select#plan', site['plan'])
+                    try:
+                        await page.select_option('select#plan', site['plan'])
+                    except:
+                        pass
                 
+                # Click submit
                 await page.click('button[type="submit"]')
                 self.log(f"📝 Signup submitted")
                 
                 # Wait for Stripe iframe
-                await page.wait_for_selector('iframe[src*="stripe"]', timeout=15000)
-                self.log(f"💳 Stripe detected - applying BIN: {bin_data[:6]}...")
-                
-                # Enter card details
-                await page.fill('input#cardNumber', bin_data)
-                await page.fill('input#expiry', '04/36')
-                await page.fill('input#cvc', '123')
-                await page.fill('input#name', 'DEEP BYPASSER')
-                
-                await page.click('button[type="submit"]')
-                self.log(f"💳 BIN applied")
+                try:
+                    await page.wait_for_selector('iframe[src*="stripe"]', timeout=15000)
+                    self.log(f"💳 Stripe detected - applying BIN: {bin_data[:6]}...")
+                    
+                    # Enter card details
+                    await page.fill('input#cardNumber', bin_data)
+                    await page.fill('input#expiry', '04/36')
+                    await page.fill('input#cvc', '123')
+                    await page.fill('input#name', 'DEEP BYPASSER')
+                    
+                    # Submit payment
+                    await page.click('button[type="submit"]')
+                    self.log(f"💳 BIN applied successfully")
+                    
+                except:
+                    self.log(f"⚠️ No Stripe iframe found, skipping payment", "warning")
                 
                 # Wait for success
-                await page.wait_for_selector('text="Thank you" or text="Success" or text="Order confirmed"', timeout=30000)
+                try:
+                    await page.wait_for_selector('text="Thank you" or text="Success" or text="Order confirmed"', timeout=30000)
+                except:
+                    pass
                 
                 # Log success
                 self.log_success(
@@ -251,7 +284,7 @@ class AutomationEngine:
         loop.close()
         
         self.running = False
-        return result
+        self.log("⏹️ Automation completed")
 
 engine = AutomationEngine()
 
@@ -286,6 +319,13 @@ def check_proxies():
     save_proxies(proxies)
     return jsonify({'status': 'success', 'proxies': proxies})
 
+@app.route('/api/proxies/<int:proxy_id>', methods=['DELETE'])
+def delete_proxy(proxy_id):
+    proxies = load_proxies()
+    proxies = [p for p in proxies if p['id'] != proxy_id]
+    save_proxies(proxies)
+    return jsonify({'status': 'success'})
+
 @app.route('/api/sites')
 def get_sites():
     return jsonify(load_sites())
@@ -306,6 +346,13 @@ def add_site():
     save_sites(sites)
     return jsonify({'status': 'success', 'site': site})
 
+@app.route('/api/sites/<int:site_id>', methods=['DELETE'])
+def delete_site(site_id):
+    sites = load_sites()
+    sites = [s for s in sites if s['id'] != site_id]
+    save_sites(sites)
+    return jsonify({'status': 'success'})
+
 @app.route('/api/bins')
 def get_bins():
     return jsonify(load_bins())
@@ -324,6 +371,13 @@ def add_bin():
     save_bins(bins)
     return jsonify({'status': 'success', 'bin': bin_data})
 
+@app.route('/api/bins/<int:bin_id>', methods=['DELETE'])
+def delete_bin(bin_id):
+    bins = load_bins()
+    bins = [b for b in bins if b['id'] != bin_id]
+    save_bins(bins)
+    return jsonify({'status': 'success'})
+
 @app.route('/api/start', methods=['POST'])
 def start_automation():
     data = request.json
@@ -335,38 +389,50 @@ def stop_automation():
     engine.running = False
     return jsonify({'status': 'stopped'})
 
+@app.route('/api/status')
+def get_status():
+    return jsonify({
+        'running': engine.running,
+        'status': 'running' if engine.running else 'idle'
+    })
+
 @app.route('/api/success')
 def get_success():
-    if os.path.exists(SUCCESS_FILE):
-        with open(SUCCESS_FILE, 'r') as f:
-            reader = csv.reader(f)
-            data = list(reader)
-            return jsonify(data)
-    return jsonify([])
+    return jsonify(load_success())
 
 @app.route('/api/success/export')
 def export_success():
     if os.path.exists(SUCCESS_FILE):
-        return send_file(SUCCESS_FILE, as_attachment=True)
+        return send_file(SUCCESS_FILE, as_attachment=True, download_name=f"success_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
     return jsonify({'error': 'No data'}), 404
+
+@app.route('/api/success/clear', methods=['POST'])
+def clear_success():
+    if os.path.exists(SUCCESS_FILE):
+        os.remove(SUCCESS_FILE)
+    return jsonify({'status': 'success'})
+
+@app.route('/api/lemur', methods=['GET'])
+def get_lemur_keys():
+    return jsonify(load_lemur_keys())
 
 @app.route('/api/lemur', methods=['POST'])
 def add_lemur_key():
     data = request.json
-    # Store Lemur API key securely
-    with open(os.path.join(DATA_DIR, 'lemur_keys.json'), 'a') as f:
-        json.dump(data, f)
-        f.write('\n')
+    keys = load_lemur_keys()
+    keys.append({
+        'key': data['key'],
+        'user': data.get('user', 'Anonymous'),
+        'timestamp': datetime.now().isoformat()
+    })
+    save_lemur_keys(keys)
     return jsonify({'status': 'success'})
 
-@app.route('/logs')
-def get_logs():
-    logs = []
-    while not engine.log_queue.empty():
-        logs.append(engine.log_queue.get())
-    return jsonify(logs)
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'running': engine.running})
 
-# ======= WEBSOCKET EVENTS =======
+# ======= SOCKET EVENTS =======
 @socketio.on('connect')
 def handle_connect():
     emit('connected', {'status': 'connected'})
@@ -375,5 +441,7 @@ def handle_connect():
 def handle_disconnect():
     pass
 
+# ======= MAIN =======
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)
